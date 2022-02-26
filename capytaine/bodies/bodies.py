@@ -236,7 +236,7 @@ class FloatingBody(Abstract3DObject):
     ###################
 
     def get_hydrostatic_stiffness(self, divergence=None, saveas=None, 
-                                  density=1000.0, gravity=9.80665):
+                                  density=1000.0, gravity=9.80665) -> xr.DataArray:
         """Compute hydrostatic stiffness matrix for all DOFs of the body. 
         
         :math:`C_{ij} = \int_S (\hat{n} \cdot V_i) * (w_j + z*D_j  dS)`
@@ -250,10 +250,27 @@ class FloatingBody(Abstract3DObject):
         NOTE: this function computes the hydrostatic stiffness assuming :math:`D_{j} = 0`. 
         If :math:`D_j \neq 0`, input the divergence interpolated to face centers. 
         
-        Reference:
-        
-        Newman, John Nicholas. "Wave effects on deformable bodies." Applied ocean research 16.1 (1994): 47-59.
-        http://resolver.tudelft.nl/uuid:0adff84c-43c7-43aa-8cd8-d4c44240bed8
+        Reference
+        ---------
+        Newman, John Nicholas. "Wave effects on deformable bodies." Applied 
+        ocean research 16.1 (1994): 47-59.
+        https://doi.org/10.1016/0141-1187(94)90013-2
+
+        Parameters
+        ----------
+        divergence : float, optional
+            see summary, by default None
+        saveas : optional
+            set as filename or file handle to save txt file, by default None
+        density : float, optional
+            density of the water, by default 1000.0
+        gravity : float, optional
+            acceleration due to gravity, by default 9.80665
+
+        Returns
+        -------
+        C : xr.DataArray
+            linear hydrostatic stiffness matrix
         """
     
         hydrostatic_stiffness = -density*gravity* np.array([
@@ -268,33 +285,60 @@ class FloatingBody(Abstract3DObject):
         return self.add_dofs_labels_to_matrix(hydrostatic_stiffness)
     
     
-    def get_volumes(self):
+    def get_volumes(self) -> np.ndarray:
         """Volumes in x, y, z components"""
         return np.sum(self.mesh.faces_normals * self.mesh.faces_centers \
                 * self.mesh.faces_areas[np.newaxis].T, axis=0)
 
-    def get_volume(self):
+    def get_volume(self) -> float:
         """Volume of the body"""
         return np.mean(self.get_volumes())
 
-    def get_mass(self, density=1000):
-        """Mass of the body"""
-        return density*self.get_volume()
+    def get_mass(self, density=1000.0) -> float:
+        """Mass of the body (assumes neutrally buoyant)
 
-    def get_center_of_buoyancy(self):
+        Parameters
+        ----------
+        density : float, optional
+            density of water, by default 1000
+
+        Returns
+        -------
+        m : float
+            rigid body mass
+        """            
+
+        m = density*self.get_volume()
+
+        return m
+
+    def get_center_of_buoyancy(self) -> np.ndarray:
         """Center of buoyancy of the body"""
         return np.sum(self.mesh.faces_normals \
                     * self.mesh.faces_centers**2 \
                     * self.mesh.faces_areas[np.newaxis].T, 
                     axis=0) / (2 * self.get_volume())
 
-    def get_waterplane_area(self):
+    def get_waterplane_area(self) -> float:
         """Waterplane area of the body"""
         return -np.sum(self.mesh.faces_normals[:,2] \
                 * self.mesh.faces_areas)
         
-    def get_rigid_dof_mass(self, cog=np.zeros(3), density=1000):
-        """Interia Mass matrix of the body using gauss divergence theorem"""
+    def get_rigid_dof_mass(self, cog=np.zeros(3), density=1000) -> np.ndarray:
+        """Inertia Mass matrix of the body using gauss divergence theorem
+
+        Parameters
+        ----------
+        cog : 3-ple, optional
+            location of center of gravity, by default np.zeros(3)
+        density : float, optional
+            density of water, by default 1000
+
+        Returns
+        -------
+        M = np.ndarray
+            rigid body mass matrix
+        """
         fcs = (self.mesh.faces_centers).T
         combinations = np.array([fcs[0]**2, fcs[1]**2, fcs[2]**2, fcs[0]*fcs[1], 
                                  fcs[1]*fcs[2], fcs[2]*fcs[0]])
@@ -303,6 +347,7 @@ class FloatingBody(Abstract3DObject):
             for combination in combinations]
             for axis, normal_i in enumerate(self.mesh.faces_normals.T)])
 
+        #TODO: remove this if not using
         # xx, yy, zz, xy, yz, zx
         # interias = density * np.array([
         #     (integrals[0,1]   + integrals[0,2]   + integrals[1,1]/3 + integrals[1,2]   + integrals[2,1] + integrals[2,2]/3),
