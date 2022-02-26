@@ -12,7 +12,11 @@ from capytaine.meshes.meshes import Mesh
 from capytaine.meshes.geometry import Axis, Plane
 from capytaine.bodies.predefined.spheres import Sphere
 from capytaine.bodies.predefined.cylinders import HorizontalCylinder
+from capytaine.bodies.predefined import RectangularParallelepiped
 
+lw = 1
+rho_water = 1e3
+g = 9.81
 
 def test_dof():
     nodes = np.array([[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]])
@@ -160,3 +164,83 @@ def test_solve_hydrodynamics(fb_array):
     assert data.radiation_damping.notnull().all()
     assert data.diffraction_force.notnull().all()
     assert data.Froude_Krylov_force.notnull().all()
+
+@pytest.fixture
+def box_barge():
+    body = RectangularParallelepiped(size=(lw,lw,lw),
+                                     resolution=(25,25,25)).keep_immersed_part()
+    return body
+
+@pytest.fixture
+def sphere():
+    body = Sphere(radius=lw/2,
+                  center=(0,0,-lw), # fully submerged
+                  ntheta=25,
+                  nphi=25)
+    return body
+
+def test_hydrostatic_stiffness_heave(box_barge):
+    box_barge.add_translation_dof(direction=(0,0,1.0), name="Heave")
+    K = box_barge.get_hydrostatic_stiffness(density=rho_water,
+                                            gravity=g).values.item()
+    
+    A = lw**2
+    K_exp = A * rho_water * g
+    assert pytest.approx(K_exp,1e-20) == K
+    
+def test_hydrostatic_stiffness_pitch(box_barge):
+    box_barge.add_rotation_dof(axis=Axis(point=(0, 0, -lw/2), 
+                                         vector=(0.0, 1.0, 0.0)),
+                               name="Pitch")
+    K = box_barge.get_hydrostatic_stiffness(density=rho_water,
+                                            gravity=g).values.item()
+    
+    disp_vol = box_barge.mesh.volume
+    Ix = lw*lw**3/12
+    BM = Ix / disp_vol
+    KB = lw / 4
+    KM = KB + BM
+    KG = 0 # center of gravity at keel
+    GM = KM - KG
+    K_exp = rho_water * g * disp_vol * GM
+    
+    assert pytest.approx(K_exp, 1e-3) == K
+    
+def test_buoyancy_center(box_barge):
+    cob = box_barge.get_center_of_buoyancy()
+    cob_exp = (0, 0, -lw/4)
+    
+    assert pytest.approx(cob_exp, 1e-20) == cob
+ 
+def test_waterplane_area(box_barge):
+    A = box_barge.get_waterplane_area()
+    A_exp = lw**2
+    
+    assert pytest.approx(A_exp, 1e-20) == A
+       
+def test_rigid_dof_mass(box_barge):
+    box_barge.add_translation_dof(direction=(0,0,1.0), name="Heave")
+    I = box_barge.get_rigid_dof_mass(density=rho_water)
+    m_exp = lw**2 * lw/2 * rho_water
+    I_zz = 1/12 * m_exp * (lw**2 + lw**2)
+    
+    assert pytest.approx(m_exp, 1e-10) == I[2,2]
+    
+    assert pytest.approx(I_zz, 1e-2) == I[5,5]
+
+def test_volume(box_barge):
+    V = box_barge.get_volume()
+    V_exp = lw*lw*lw/2
+    
+    assert pytest.approx(V_exp, 1e-20) == V
+
+def test_hydrostatic_stiffness_bulge(sphere):
+    sphere.dofs["Bulge"] = sphere.mesh.faces_normals
+    K = sphere.get_hydrostatic_stiffness(density=rho_water,
+                                         gravity=g,
+                                         divergence=1, #TODO: not sure if this is right
+                                         ).values.item()
+    
+    K_exp = np.nan #TODO: come up with analytic check for this
+    
+    assert pytest.approx(K_exp, 1e-3) == K 
