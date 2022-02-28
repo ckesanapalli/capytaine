@@ -182,7 +182,7 @@ def sphere():
 def test_hydrostatic_stiffness_heave(box_barge):
     box_barge.add_translation_dof(direction=(0,0,1.0), name="Heave")
     K = box_barge.get_hydrostatic_stiffness(density=rho_water,
-                                            gravity=g).values.item()
+                                            gravity=g)
     
     A = lw**2
     K_exp = A * rho_water * g
@@ -193,7 +193,7 @@ def test_hydrostatic_stiffness_pitch(box_barge):
                                          vector=(0.0, 1.0, 0.0)),
                                name="Pitch")
     K = box_barge.get_hydrostatic_stiffness(density=rho_water,
-                                            gravity=g).values.item()
+                                            gravity=g)
     
     disp_vol = box_barge.mesh.volume
     Ix = lw*lw**3/12
@@ -207,7 +207,7 @@ def test_hydrostatic_stiffness_pitch(box_barge):
     assert pytest.approx(K_exp, 1e-3) == K
     
 def test_buoyancy_center(box_barge):
-    cob = box_barge.get_center_of_buoyancy()
+    cob = box_barge.get_buoyancy_center()
     cob_exp = (0, 0, -lw/4)
     
     assert pytest.approx(cob_exp, 1e-20) == cob
