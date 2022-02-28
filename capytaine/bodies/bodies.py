@@ -235,9 +235,90 @@ class FloatingBody(Abstract3DObject):
     # Hydrostatics #
     ###################
 
-    def get_hydrostatic_stiffness(self, divergence=None, saveas=None, 
-                                  density=1000.0, gravity=9.80665) -> xr.DataArray:
-        """Compute hydrostatic stiffness matrix for all DOFs of the body. 
+    def get_surface_integral(self, data, **kwargs):
+        return np.sum(data * self.mesh.faces_areas, **kwargs)
+    
+    def get_water_plane_integral(self, data, **kwargs):
+        return self.get_surface_integral(self.mesh.faces_normals[:,2] * data, **kwargs)
+    
+    def get_wet_surface_area(self):
+        return self.get_surface_integral(1)
+            
+    def get_volumes(self):
+        """Volumes in x, y, z components."""
+        norm_coord = self.mesh.faces_normals * self.mesh.faces_centers
+        return self.get_surface_integral(norm_coord.T, axis=1)
+    
+    def get_volume(self):
+        """Volume of the body."""
+        volumes = self.get_volumes()
+        return np.mean(volumes)
+    
+    def get_mass(self, density=1000):
+        """Mass of the body."""
+        return density * self.get_volume()
+    
+    def get_buoyancy_center(self):
+        """Center of buoyancy of the body."""
+        volume = self.get_volume()
+        coords_sq_norm = self.mesh.faces_normals * self.mesh.faces_centers**2
+        return self.get_surface_integral(coords_sq_norm.T, axis=1) / (2*volume)
+    
+    def get_waterplane_area(self):
+        return -self.get_water_plane_integral(1)
+    
+    def get_waterplane_center(self):
+        if self.mesh.vertices[:,2].max() < 0:
+            waterplane_center = np.zeros(3)
+        else:
+            waterplane_area = self.get_waterplane_area()
+            waterplane_center = -self.get_water_plane_integral(
+                self.mesh.faces_centers.T, axis=1) / waterplane_area
+            waterplane_center[2] = 0
+        
+        return waterplane_center
+    
+    def get_bmt(self):
+        """Returns Transversal Metacentric Radius of the body."""
+        volume = self.get_volume()
+        inertia_moment = -self.get_water_plane_integral(self.mesh.faces_centers[:,1]**2)
+        bmt = inertia_moment / (volume)
+        return bmt
+    
+    def get_bml(self):
+        """Returns Longitudinal Metacentric Radius of the body."""
+        volume = self.get_volume()
+        inertia_moment = -self.get_water_plane_integral(self.mesh.faces_centers[:,0]**2)
+        bmt = inertia_moment / volume
+        return bmt
+    
+    def get_gmt(self, cog=np.zeros(3)):
+        """Returns Transversal Metacentric Height of the body."""
+        gb = cog - self.get_buoyancy_center()
+        return self.get_bmt() - gb[2]
+    
+    def get_gml(self, cog=np.zeros(3)):
+        """Returns Longitudinal Metacentric Height of the body."""
+        gb = cog - self.get_buoyancy_center()
+        return self.get_bml() - gb[2]
+    
+    
+    
+    def get_dof_normals(self, dof):
+        return np.sum(self.mesh.faces_normals * dof, axis=1)
+    
+    def get_hydrostatic_stiffnessij(self, dof_i, dof_j, divergence_ij=0, 
+                                      density=1000.0, gravity=9.80665):
+        dof_normal = self.get_dof_normals(dof_j)
+        zdof_div = dof_i[:,2] + self.mesh.faces_centers[:,2] * divergence_ij
+        zdof_div_norm = -density * gravity * dof_normal * zdof_div
+        
+        hydrostatic_stiffnessij = self.get_surface_integral(zdof_div_norm)
+        return hydrostatic_stiffnessij
+    
+    def get_hydrostatic_stiffness(self, divergence=0, 
+                                      density=1000.0, gravity=9.80665):
+        r"""Compute hydrostatic stiffness matrix for all DOFs of the body.
         
         :math:`C_{ij} = \int_S (\hat{n} \cdot V_i) * (w_j + z*D_j  dS)`
         
@@ -272,73 +353,29 @@ class FloatingBody(Abstract3DObject):
         C : xr.DataArray
             linear hydrostatic stiffness matrix
         """
-    
-        hydrostatic_stiffness = -density*gravity* np.array([
-            [np.sum(np.sum(self.mesh.faces_normals * mode_vec_j,axis=1) \
-                * (mode_vec_i[:,2] + 
-                   self.mesh.faces_centers[:,2]*(divergence if divergence else 0))\
-                * self.mesh.faces_areas)
-            for mode_vec_i in self.dofs.values()]
-            for mode_vec_j in self.dofs.values()])
-        if saveas:
-            np.savetxt(saveas, hydrostatic_stiffness, delimiter=',')
-        return self.add_dofs_labels_to_matrix(hydrostatic_stiffness)
-    
-    
-    def get_volumes(self) -> np.ndarray:
-        """Volumes in x, y, z components"""
-        return np.sum(self.mesh.faces_normals * self.mesh.faces_centers \
-                * self.mesh.faces_areas[np.newaxis].T, axis=0)
-
-    def get_volume(self) -> float:
-        """Volume of the body"""
-        return np.mean(self.get_volumes())
-
-    def get_mass(self, density=1000.0) -> float:
-        """Mass of the body (assumes neutrally buoyant)
-
-        Parameters
-        ----------
-        density : float, optional
-            density of water, by default 1000
-
-        Returns
-        -------
-        m : float
-            rigid body mass
-        """            
-
-        m = density*self.get_volume()
-
-        return m
-
-    def get_center_of_buoyancy(self) -> np.ndarray:
-        """Center of buoyancy of the body"""
-        return np.sum(self.mesh.faces_normals \
-                    * self.mesh.faces_centers**2 \
-                    * self.mesh.faces_areas[np.newaxis].T, 
-                    axis=0) / (2 * self.get_volume())
-
-    def get_waterplane_area(self) -> float:
-        """Waterplane area of the body"""
-        return -np.sum(self.mesh.faces_normals[:,2] \
-                * self.mesh.faces_areas)
+        dof_count = len(self.dofs.keys())
         
-    def get_rigid_dof_mass(self, cog=np.zeros(3), density=1000) -> np.ndarray:
-        """Inertia Mass matrix of the body using gauss divergence theorem
-
-        Parameters
-        ----------
-        cog : 3-ple, optional
-            location of center of gravity, by default np.zeros(3)
-        density : float, optional
-            density of water, by default 1000
-
-        Returns
-        -------
-        M = np.ndarray
-            rigid body mass matrix
-        """
+        if dof_count == 1:
+            dof = list(self.dofs.values())[0]
+            return self.get_hydrostatic_stiffnessij(dof, dof, 
+                                         divergence_ij=divergence,
+                                         density=density, gravity=gravity)
+        else:
+            if divergence == 0:
+                divergence = np.zeros([dof_count, dof_count])
+            
+            hydrostatic_stiffness = np.array([
+                [self.get_hydrostatic_stiffnessij(dof_i, dof_j, 
+                                            divergence_ij=divergence[i,j],
+                                            density=density, gravity=gravity)
+                for j, dof_j in enumerate(self.dofs.values())]
+                for i, dof_i in enumerate(self.dofs.values())
+                ])
+            return hydrostatic_stiffness
+    
+    
+    def get_rigid_dof_mass(self, cog=np.zeros(3), density=1000):
+        """Interia Mass matrix of the body for 6 rigid DOFs."""
         fcs = (self.mesh.faces_centers).T
         combinations = np.array([fcs[0]**2, fcs[1]**2, fcs[2]**2, fcs[0]*fcs[1], 
                                  fcs[1]*fcs[2], fcs[2]*fcs[0]])
@@ -347,21 +384,13 @@ class FloatingBody(Abstract3DObject):
             for combination in combinations]
             for axis, normal_i in enumerate(self.mesh.faces_normals.T)])
 
-        #TODO: remove this if not using
-        # xx, yy, zz, xy, yz, zx
-        # interias = density * np.array([
-        #     (integrals[0,1]   + integrals[0,2]   + integrals[1,1]/3 + integrals[1,2]   + integrals[2,1] + integrals[2,2]/3),
-        #     (integrals[0,0]/3 + integrals[0,2]   + integrals[1,0]   + integrals[1,2]   + integrals[2,0] + integrals[2,2]/3),
-        #     (integrals[0,0]/3 + integrals[0,1]   + integrals[1,0]   + integrals[1,1]/3 + integrals[2,0] + integrals[2,1]  ),
-        #     (integrals[0,3]/2 + integrals[1,3]/2 + integrals[2,3]  ),
-        #     (integrals[0,4]   + integrals[1,4]/2 + integrals[2,4]/2),
-        #     (integrals[0,5]/2 + integrals[1,5]   + integrals[2,5]/2),
-        # ])/3
-        
         interias = density * np.array([
-            (integrals[0,1]   + integrals[0,2]   + integrals[1,1]/3 + integrals[1,2]   + integrals[2,1] + integrals[2,2]/3)/3,
-            (integrals[0,0]/3 + integrals[0,2]   + integrals[1,0]   + integrals[1,2]   + integrals[2,0] + integrals[2,2]/3)/3,
-            (integrals[0,0]/3 + integrals[0,1]   + integrals[1,0]   + integrals[1,1]/3 + integrals[2,0] + integrals[2,1]  )/3,
+            (integrals[0,1]   + integrals[0,2]   + integrals[1,1]/3 \
+             + integrals[1,2]   + integrals[2,1] + integrals[2,2]/3)/3,
+            (integrals[0,0]/3 + integrals[0,2]   + integrals[1,0]   \
+             + integrals[1,2]   + integrals[2,0] + integrals[2,2]/3)/3,
+            (integrals[0,0]/3 + integrals[0,1]   + integrals[1,0]   \
+             + integrals[1,1]/3 + integrals[2,0] + integrals[2,1]  )/3,
             integrals[2,3],
             integrals[0,4],
             integrals[1,5]
@@ -369,15 +398,96 @@ class FloatingBody(Abstract3DObject):
         
         mass = self.get_mass()
         mass_mat = np.array([
-            [ mass       ,  0          ,  0          ,  0          ,  mass*cog[2], -mass*cog[1]],
-            [ 0          ,  mass       ,  0          , -mass*cog[2],  0          ,  mass*cog[0]],
-            [ 0          ,  0          ,  mass       ,  mass*cog[1], -mass*cog[0],  0          ],
-            [ 0          , -mass*cog[2],  mass*cog[1],  interias[0], -interias[3], -interias[5]],
-            [ mass*cog[2],  0          , -mass*cog[0], -interias[3],  interias[1], -interias[4]],
-            [-mass*cog[1],  mass*cog[0],            0, -interias[5], -interias[4],  interias[2]],
+            [ mass       ,  0          ,  0           ,  
+              0          ,  mass*cog[2], -mass*cog[1]],
+            [ 0          ,  mass       ,  0           ,
+             -mass*cog[2],  0          ,  mass*cog[0]],
+            [ 0          ,  0          ,  mass        ,
+              mass*cog[1], -mass*cog[0],  0          ],
+            [ 0          , -mass*cog[2],  mass*cog[1] ,  
+              interias[0], -interias[3], -interias[5]],
+            [ mass*cog[2],  0          , -mass*cog[0] , 
+             -interias[3],  interias[1], -interias[4]],
+            [-mass*cog[1],  mass*cog[0],  0           ,
+             -interias[5], -interias[4], interias[2]] ,
         ])
         
         return mass_mat
+    
+    
+    def compute_hydrostatics(self, cog=np.zeros(3), density=1000, gravity=9.80665, 
+                             free_surface=0.0) -> dict:
+        """Compute hydrostatics of the body.
+
+        Parameters
+        ----------
+        cog : np.ndarray, optional
+            Center of gravity. The default is np.zeros(3).
+        density : float, optional
+            Density of Water. The default is 1000.
+        gravity : float, optional
+            Gravity. The default is 9.80665.
+        free_surface : float, optional
+            z coordinate of the free surface. The default is 0.0.
+
+        Returns
+        -------
+        hydrostatics : dict
+            All hydrostatics variables and respected values of the body.
+        """
+        vertices = self.mesh.vertices
+        coord_max = vertices.max(axis=0)
+        coord_min = vertices.min(axis=0)
+        
+        full_length, full_breadth, depth = vertices.max(axis=0) - vertices.min(axis=0)
+        
+        if coord_max[2] < free_surface:
+            clipped_body = self
+            wl_length, wl_breadth = 0.0, 0.0
+        else:
+            plane = Plane(normal=(0, 0, 1), point=(0, 0, free_surface))
+            clipped_body = self.clip(plane=plane)
+            
+            clipped_body_coords = clipped_body.mesh.vertices
+            water_plane_idx = np.isclose(clipped_body_coords[:,2], 0.0)
+            water_plane = clipped_body_coords[water_plane_idx][:,:-1]
+            wl_length, wl_breadth = water_plane.max(axis=0) - water_plane.min(axis=0)
+        
+        sub_length, sub_breadth, _ = clipped_body_coords.max(axis=0) \
+                                    - clipped_body_coords.min(axis=0)
+        
+        hydrostatics = {}
+        hydrostatics["grav"] = gravity
+        hydrostatics["rho_water"] = density
+        hydrostatics["cog"] = cog
+        hydrostatics["total_volume"] = self.get_volume()
+        hydrostatics["total_volume_center"] = self.get_buoyancy_center()
+        
+        hydrostatics["wet_surface_area"] = clipped_body.get_wet_surface_area()
+        hydrostatics["disp_volume"] = clipped_body.get_volume()
+        hydrostatics["disp_mass"] = clipped_body.get_mass(density=density)
+        hydrostatics["buoyancy_center"] = clipped_body.get_buoyancy_center()
+        hydrostatics["waterplane_center"] = clipped_body.get_waterplane_center()
+        hydrostatics["waterplane_area"] = clipped_body.get_waterplane_area()
+        hydrostatics["transversal_metacentric_radius"] = clipped_body.get_bmt()
+        hydrostatics["longitudinal_metacentric_radius"] = clipped_body.get_bml()
+        hydrostatics["transversal_metacentric_height"] = clipped_body.get_gmt(cog=cog)
+        hydrostatics["longitudinal_metacentric_height"] = clipped_body.get_gml(cog=cog)
+        hydrostatics["stiffness_matrix"] = clipped_body.get_hydrostatic_stiffness(
+            density=density, gravity=gravity)
+        
+        hydrostatics["length_overall"] = full_breadth
+        hydrostatics["breadth_overall"] = full_breadth
+        hydrostatics["depth"] = depth
+        hydrostatics["draught"] = np.abs(coord_min[2])
+        hydrostatics["length_at_waterline"] = wl_length
+        hydrostatics["breadth_at_waterline"] = wl_breadth
+        hydrostatics["length_overall_submerged"] = sub_length
+        hydrostatics["breadth_overall_submerged"] = sub_breadth
+        hydrostatics["inertia_matrix"] = clipped_body.get_rigid_dof_mass(
+            cog=cog, density=density)
+        
+        return hydrostatics
     
     ###################
     # Transformations #
